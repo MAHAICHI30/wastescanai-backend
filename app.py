@@ -1,5 +1,5 @@
 import os
-import pymysql  # 引入刚才成功安装的数据库连接库
+import pymysql  # 引入用于连接数据库的库
 from flask import Flask, request, jsonify
 from ultralytics import YOLO
 from flask_cors import CORS
@@ -8,11 +8,16 @@ app = Flask(__name__)
 CORS(app)
 
 # =======================================================
-# 1. 自动定位并加载垃圾分类模型
+# 1. 自动定位并加载垃圾分类模型（已针对 Render CPU 服务器优化）
 # =======================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# 兼容你的项目目录结构，寻找 models/best.pt
 MODEL_PATH = os.path.join(BASE_DIR, 'models', 'best.pt')
+
+print(f"🔄 Loading YOLOv8 model from: {MODEL_PATH}")
 model = YOLO(MODEL_PATH)
+model.to('cpu')  # 🔥 关键修复：强制模型运行在 CPU 设备上，彻底解决 CUDA 序列化报错！
+print("✅ Model loaded successfully on CPU.")
 
 
 # 快捷连接 MySQL 数据库的辅助函数
@@ -43,7 +48,8 @@ def predict():
     file.save(img_path)
     
     try:
-        results = model.predict(source=img_path, conf=0.35, workers=0)
+        # workers=0 适合轻量级云服务器环境
+        results = model.predict(source=img_path, conf=0.35, workers=0, device='cpu')
         best_detection = None
         highest_conf = 0.0
         
@@ -78,10 +84,9 @@ def predict():
             try:
                 db = get_db_connection()
                 with db.cursor() as cursor:
-                    # 💡 核心修正：这里已经彻底砍掉了原有的 "sql_record" (INSERT INTO waste_records) 代码！
-                    # 这样可以誓死捍卫 PHP 端对历史记录表写入渠道（Scan / Upload）的绝对控制权。
+                    # 💡 核心逻辑：不向 waste_records 写入数据，全权交由 PHP 接管历史总表。
                     
-                    # 🌟 动作 B 完美保留：用于驱动前端仪表盘饼图实时暴涨
+                    # 🌟 动作 B 保留：驱动前端仪表盘饼图与容量实时暴涨
                     sql_update_bin = """
                         UPDATE recycle_bins 
                         SET current_volume = LEAST(current_volume + 5, 100),
@@ -161,10 +166,14 @@ def reset_bin():
 
 
 # =======================================================
-# 5. 自动化及外网服务发布配置
+# 5. 自动化及云端服务发布配置（自适应 Render 端口映射）
 # =======================================================
 if __name__ == '__main__':
-    # 允许所有网络接口(0.0.0.0)访问，以便 Cloudflare Tunnel 正常进行本地请求的转发
+    # 动态读取云服务器分配的 PORT 环境变量，如果读取不到（比如本地运行），则默认使用 5001 端口
+    port = int(os.environ.get('PORT', 5001))
+    
     print("🚀 WasteScan Core AI Server (Production Mode) is initializing...")
-    print("📍 Listening internally on port: 5001")
-    app.run(host='0.0.0.0', port=5001, debug=False)
+    print(f"📍 Application is going to listen on port: {port}")
+    
+    # 允许所有网络接口(0.0.0.0)访问，以便云平台、容器或外网转发可以畅通访问
+    app.run(host='0.0.0.0', port=port, debug=False)

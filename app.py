@@ -8,19 +8,19 @@ app = Flask(__name__)
 CORS(app)
 
 # =======================================================
-# 1. 自动定位并加载垃圾分类模型（已针对 Render CPU 服务器优化）
+# 1. 自动定位并加载垃圾分类模型（已针对 Render CPU 服务器与根目录优化）
 # =======================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# 兼容你的项目目录结构，寻找 models/best.pt
-MODEL_PATH = os.path.join(BASE_DIR, 'models', 'best.pt')
+# 🔥 彻底修正：直接从根目录读取 best.pt（不再去寻找不存在的 models 文件夹）
+MODEL_PATH = os.path.join(BASE_DIR, 'best.pt')
 
 print(f"🔄 Loading YOLOv8 model from: {MODEL_PATH}")
 model = YOLO(MODEL_PATH)
-model.to('cpu')  # 🔥 关键修复：强制模型运行在 CPU 设备上，彻底解决 CUDA 序列化报错！
+model.to('cpu')  # 🔥 强制模型运行在 CPU 设备上，解决 CUDA 序列化报错
 print("✅ Model loaded successfully on CPU.")
 
 
-# 快捷连接 MySQL 数据库的辅助函数
+# 快捷连接 MySQL 数据库 the 辅助函数
 def get_db_connection():
     return pymysql.connect(
         host="localhost",
@@ -175,5 +175,5 @@ if __name__ == '__main__':
     print("🚀 WasteScan Core AI Server (Production Mode) is initializing...")
     print(f"📍 Application is going to listen on port: {port}")
     
-    # 允许所有网络接口(0.0.0.0)访问，以便云平台、容器或外网转发可以畅通访问
+    # 允许所有网络接口(0.0.0.0)访问，以便云平台转发可以畅通访问
     app.run(host='0.0.0.0', port=port, debug=False)

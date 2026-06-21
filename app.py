@@ -11,7 +11,7 @@ CORS(app)
 # 1. 自动定位并加载垃圾分类模型（已针对 Render CPU 服务器与根目录优化）
 # =======================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# 🔥 彻底修正：直接从根目录读取 best.pt（不再去寻找不存在的 models 文件夹）
+# 🔥 直接从根目录读取 best.pt（不再去寻找不存在的 models 文件夹）
 MODEL_PATH = os.path.join(BASE_DIR, 'best.pt')
 
 print(f"🔄 Loading YOLOv8 model from: {MODEL_PATH}")
@@ -20,13 +20,14 @@ model.to('cpu')  # 🔥 强制模型运行在 CPU 设备上，解决 CUDA 序列
 print("✅ Model loaded successfully on CPU.")
 
 
-# 快捷连接 MySQL 数据库 the 辅助函数
+# 🔥 核心修正：完美对接你的 Awardspace 远程云端 MySQL 数据库配置
 def get_db_connection():
     return pymysql.connect(
-        host="localhost",
-        user="root",
-        password="",  # XAMPP 默认密码为空
-        database="wastescanaidb",
+        host="fdb1030.awardspace.net",      # 👈 Awardspace 提供的 MySQL Host
+        user="4574972_wastescanaidb",       # 👈 Awardspace 提供的 Database User
+        password="0qm+.9i41TLk5yth",        # 👈 🔥 已经替换为你刚拿到的真实数据库密码
+        database="4574972_wastescanaidb",   # 👈 Awardspace 提供的 Database Name
+        port=3306,                         # 👈 指定标准 MySQL 端口
         charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor
     )
@@ -166,7 +167,7 @@ def reset_bin():
 
 
 # =======================================================
-# 5. 自动化及云端服务发布配置（自适应 Render 端口映射）
+# 5. 自动化及云端 service 发布配置（自适应 Render 端口映射）
 # =======================================================
 if __name__ == '__main__':
     # 动态读取云服务器分配的 PORT 环境变量，如果读取不到（比如本地运行），则默认使用 5001 端口

@@ -3,3 +3,4 @@ gunicorn
 pymysql
 ultralytics
 opencv-python
+flask-cors

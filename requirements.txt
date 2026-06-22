@@ -2,4 +2,4 @@ flask
 gunicorn
 pymysql
 ultralytics
-opencv-python-headless
+opencv-python

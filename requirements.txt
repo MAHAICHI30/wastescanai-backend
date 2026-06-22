@@ -1,5 +1,5 @@
-Flask
-flask-cors
+flask
+gunicorn
+pymysql
 ultralytics
 opencv-python-headless
-pymysql

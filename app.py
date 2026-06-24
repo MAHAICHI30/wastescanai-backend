@@ -11,23 +11,23 @@ CORS(app)
 # 1. 自动定位并加载垃圾分类模型（已针对 Render CPU 服务器与根目录优化）
 # =======================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# 🔥 直接从根目录读取 best.pt（不再去寻找不存在的 models 文件夹）
+# 直接从根目录读取 best.pt
 MODEL_PATH = os.path.join(BASE_DIR, 'best.pt')
 
 print(f"🔄 Loading YOLOv8 model from: {MODEL_PATH}")
 model = YOLO(MODEL_PATH)
-model.to('cpu')  # 🔥 强制模型运行在 CPU 设备上，解决 CUDA 序列化报错
+model.to('cpu')  # 强制模型运行在 CPU 设备上，解决 CUDA 序列化报错
 print("✅ Model loaded successfully on CPU.")
 
 
-# 🔥 核心修正：完美对接你的 Awardspace 远程云端 MySQL 数据库配置
+# 🌟 核心修正：统一对齐到你目前 InfinityFree 的云端 MySQL 数据库配置
 def get_db_connection():
     return pymysql.connect(
-        host="fdb1030.awardspace.net",      # 👈 Awardspace 提供的 MySQL Host
-        user="4574972_wastescanaidb",       # 👈 Awardspace 提供的 Database User
-        password="0qm+.9i41TLk5yth",        # 👈 🔥 已经替换为你刚拿到的真实数据库密码
-        database="4574972_wastescanaidb",   # 👈 Awardspace 提供的 Database Name
-        port=3306,                         # 👈 指定标准 MySQL 端口
+        host="sql202.infinityfree.com",      # 👈 统一对齐为 InfinityFree 数据库 Host
+        user="if0_42250085",                # 👈 InfinityFree 数据库 User
+        password="aBVZ6uRqDJ",              # 👈 InfinityFree 数据库密码
+        database="if0_42250085_wastescanaidb", # 👈 InfinityFree 数据库 Name
+        port=3306,                           # 指定标准 MySQL 端口
         charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor
     )

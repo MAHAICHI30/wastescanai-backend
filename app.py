@@ -162,16 +162,7 @@ def reset_bin():
 
 
 # =======================================================
-# 5. 自动化及外网服务发布配置
-# =======================================================
-if __name__ == '__main__':
-    # 允许所有网络接口(0.0.0.0)访问，以便 Cloudflare Tunnel 正常进行本地请求的转发
-    print("🚀 WasteScan Core AI Server (Production Mode) is initializing...")
-    print("📍 Listening internally on port: 5001")
-    app.run(host='0.0.0.0', port=5001, debug=False)
-
-# =======================================================
-# 6. 临时路由：用于初始化数据库表（仅首次部署使用）
+# 5. 临时路由：用于初始化数据库表（仅首次部署使用）
 # =======================================================
 @app.route('/setup_db', methods=['GET'])
 def setup_db():
@@ -202,3 +193,11 @@ def setup_db():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+# =======================================================
+# 6. 自动化及外网服务发布配置
+# =======================================================
+if __name__ == '__main__':
+    # 允许所有网络接口(0.0.0.0)访问，以便 Cloudflare Tunnel 正常进行本地请求的转发
+    print("🚀 WasteScan Core AI Server (Production Mode) is initializing...")
+    print("📍 Listening internally on port: 5001")
+    app.run(host='0.0.0.0', port=5001, debug=False)

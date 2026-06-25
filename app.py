@@ -169,3 +169,36 @@ if __name__ == '__main__':
     print("🚀 WasteScan Core AI Server (Production Mode) is initializing...")
     print("📍 Listening internally on port: 5001")
     app.run(host='0.0.0.0', port=5001, debug=False)
+
+# =======================================================
+# 6. 临时路由：用于初始化数据库表（仅首次部署使用）
+# =======================================================
+@app.route('/setup_db', methods=['GET'])
+def setup_db():
+    try:
+        db = get_db_connection()
+        with db.cursor() as cursor:
+            # 创建表
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS recycle_bins (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    bin_name VARCHAR(50) NOT NULL UNIQUE,
+                    current_volume INT DEFAULT 0,
+                    status VARCHAR(20) DEFAULT 'Normal'
+                )
+            """)
+            # 插入初始数据
+            cursor.execute("""
+                INSERT INTO recycle_bins (bin_name, current_volume, status) VALUES 
+                ('aluminium', 0, 'Normal'),
+                ('paper', 0, 'Normal'),
+                ('plastic', 0, 'Normal')
+                ON DUPLICATE KEY UPDATE bin_name=bin_name
+            """)
+            db.commit()
+        db.close()
+        return jsonify({"status": "success", "message": "Database setup completed!"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+

@@ -4,7 +4,7 @@ from flask import Flask, request, jsonify
 from ultralytics import YOLO
 from flask_cors import CORS
 
-app = Flask(__name__)
+app = Flask(__name__) 
 CORS(app)
 
 # =======================================================

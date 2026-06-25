@@ -25,7 +25,7 @@ def get_db_connection():
         port=int(os.getenv('DB_PORT', '3306')),      # ✅ 修改：从环境变量读取
         charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor
-    )
+    ) 
 
 
 # =======================================================

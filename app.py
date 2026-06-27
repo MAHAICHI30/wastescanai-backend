@@ -1,31 +1,63 @@
 import os
 import pymysql  # 引入刚才成功安装的数据库连接库
+import cv2        # 🆕 显式引入 OpenCV 用于图像 640x640 预处理
+import numpy as np # 🆕 引入 Numpy 用于画布矩阵操作
 from flask import Flask, request, jsonify
 from ultralytics import YOLO
 from flask_cors import CORS
 
-app = Flask(__name__) 
+app = Flask(__name__)
 CORS(app)
 
 # =======================================================
 # 1. 自动定位并加载垃圾分类模型
 # =======================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, 'best.pt')  # ✅ 修改：直接读取根目录的 best.pt
+MODEL_PATH = os.path.join(BASE_DIR, 'models', 'best.pt')
 model = YOLO(MODEL_PATH)
 
 
 # 快捷连接 MySQL 数据库的辅助函数
 def get_db_connection():
     return pymysql.connect(
-        host=os.getenv('DB_HOST', 'localhost'),      # ✅ 修改：从环境变量读取
-        user=os.getenv('DB_USER', 'root'),           # ✅ 修改：从环境变量读取
-        password=os.getenv('DB_PASSWORD', ''),       # ✅ 修改：从环境变量读取
-        database=os.getenv('DB_NAME', 'wastescanaidb'), # ✅ 修改：从环境变量读取
-        port=int(os.getenv('DB_PORT', '3306')),      # ✅ 修改：从环境变量读取
+        host="localhost",
+        user="root",
+        password="",  # XAMPP 默认密码为空
+        database="wastescanaidb",
         charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor
-    ) 
+    )
+
+
+def letterbox_resize(img_path, target_size=(640, 640)):
+    """
+    🆕 核心解决方案：保持宽高比等比例缩放图片，并用黑色填充到指定的 640x640 分辨率。
+    此举能有效解决因图像尺寸不规整、比例失调带来的 YOLOv8 目标检测失败（Detection Failures）挑战。
+    """
+    img = cv2.imread(img_path)
+    if img is None:
+        return
+
+    h, w = img.shape[:2]
+    th, tw = target_size
+
+    # 计算自适应最佳缩放比例
+    scale = min(tw / w, th / h)
+    nw, nh = int(w * scale), int(h * scale)
+
+    # 等比例缩放图像
+    img_resized = cv2.resize(img, (nw, nh))
+
+    # 创建一个 640x640 的纯黑画布
+    background = np.zeros((th, tw, 3), dtype=np.uint8)
+
+    # 将缩放后的图像居中粘贴至黑色画布上，防止图像拉伸变形导致特征丢失
+    dx = (tw - nw) // 2
+    dy = (th - nh) // 2
+    background[dy:dy+nh, dx:dx+nw] = img_resized
+
+    # 覆盖保存为符合 640x640 标准分辨率的预处理图像
+    cv2.imwrite(img_path, background)
 
 
 # =======================================================
@@ -43,7 +75,18 @@ def predict():
     img_path = os.path.join(upload_dir, file.filename)
     file.save(img_path)
     
+    # =======================================================
+    # 🌟 核心突破注入：显式执行 640 x 640 图像预处理与尺寸调整
+    # =======================================================
     try:
+        letterbox_resize(img_path, target_size=(640, 640))
+        print(f"⚙️ [Preprocessing] Image successfully optimized and resized to 640x640: {file.filename}")
+    except Exception as prep_err:
+        print(f"⚠️ [Preprocessing Warning] Letterbox resize failed: {prep_err}")
+    # =======================================================
+    
+    try:
+        # 此时传入的图片已完美调整为标准 640x640 分辨率
         results = model.predict(source=img_path, conf=0.35, workers=0)
         best_detection = None
         highest_conf = 0.0
@@ -79,9 +122,6 @@ def predict():
             try:
                 db = get_db_connection()
                 with db.cursor() as cursor:
-                    # 💡 核心修正：这里已经彻底砍掉了原有的 "sql_record" (INSERT INTO waste_records) 代码！
-                    # 这样可以誓死捍卫 PHP 端对历史记录表写入渠道（Scan / Upload）的绝对控制权。
-                    
                     # 🌟 动作 B 完美保留：用于驱动前端仪表盘饼图实时暴涨
                     sql_update_bin = """
                         UPDATE recycle_bins 
@@ -162,39 +202,7 @@ def reset_bin():
 
 
 # =======================================================
-# 5. 临时路由：用于初始化数据库表（仅首次部署使用）
-# =======================================================
-@app.route('/setup_db', methods=['GET'])
-def setup_db():
-    try:
-        db = get_db_connection()
-        with db.cursor() as cursor:
-            # 创建表
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS recycle_bins (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    bin_name VARCHAR(50) NOT NULL UNIQUE,
-                    current_volume INT DEFAULT 0,
-                    status VARCHAR(20) DEFAULT 'Normal'
-                )
-            """)
-            # 插入初始数据
-            cursor.execute("""
-                INSERT INTO recycle_bins (bin_name, current_volume, status) VALUES 
-                ('aluminium', 0, 'Normal'),
-                ('paper', 0, 'Normal'),
-                ('plastic', 0, 'Normal')
-                ON DUPLICATE KEY UPDATE bin_name=bin_name
-            """)
-            db.commit()
-        db.close()
-        return jsonify({"status": "success", "message": "Database setup completed!"})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-
-# =======================================================
-# 6. 自动化及外网服务发布配置
+# 5. 自动化及外网服务发布配置
 # =======================================================
 if __name__ == '__main__':
     # 允许所有网络接口(0.0.0.0)访问，以便 Cloudflare Tunnel 正常进行本地请求的转发

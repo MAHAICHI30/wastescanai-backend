@@ -36,7 +36,7 @@ def letterbox_resize(img_path, target_size=(640, 640)):
     """
     img = cv2.imread(img_path)
     if img is None:
-        return
+        raise FileNotFoundError(f"无法读取图片文件: {img_path}")
 
     h, w = img.shape[:2]
     th, tw = target_size
@@ -70,7 +70,8 @@ def predict():
         
     file = request.files['image']
     
-    upload_dir = os.path.join(BASE_DIR, 'uploads')
+    # 🌟 修正：将 'uploads' 改为 'upload'，与本地目录及 .gitignore 保持严格一致
+    upload_dir = os.path.join(BASE_DIR, 'upload')
     os.makedirs(upload_dir, exist_ok=True)
     img_path = os.path.join(upload_dir, file.filename)
     file.save(img_path)
@@ -118,7 +119,7 @@ def predict():
             final_result = best_detection["class_name"]
             final_box = best_detection["box_css"]
             
-            db = None
+            db = None  # 🌟 修正：在此处初始化，防止未定义数据库连接时触发 finally 报错
             try:
                 db = get_db_connection()
                 with db.cursor() as cursor:

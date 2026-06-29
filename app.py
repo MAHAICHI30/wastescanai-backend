@@ -1,15 +1,10 @@
 import os
-import torch
-
-# 🌟 终极核心突破：直接关闭 PyTorch 2.6+ 的强制安全性检测，允许顺利反序列化加载 YOLOv8 自定义模型结构
-os.environ["TORCH_FORCE_WEIGHTS_ONLY_LOAD"] = "0"
-
-import pymysql  # 引入刚才成功安装的数据库连接库
-import cv2       # 🆕 显式引入 OpenCV 用于图像 640x640 预处理
-import numpy as np # 🆕 引入 Numpy 用于画布矩阵操作
 from flask import Flask, request, jsonify
 from ultralytics import YOLO
 from flask_cors import CORS
+import pymysql  
+import cv2       
+import numpy as np 
 
 app = Flask(__name__)
 CORS(app)
@@ -21,6 +16,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, 'best.pt')  
 model = YOLO(MODEL_PATH)
 
+# ... 后面剩下的接口和逻辑代码保持不变 ...
 
 # 🌟 核心升级：连通 Railway 云端 MySQL 数据库
 # 优先读取 Railway 生产环境变量，若本地测试则回退到默认凭证

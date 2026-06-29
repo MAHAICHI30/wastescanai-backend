@@ -1,29 +1,15 @@
 import os
-import torch   # 🌟 引入 torch 用于配置安全白名单
+import torch
+
+# 🌟 终极核心突破：直接关闭 PyTorch 2.6+ 的强制安全性检测，允许顺利反序列化加载 YOLOv8 自定义模型结构
+os.environ["TORCH_FORCE_WEIGHTS_ONLY_LOAD"] = "0"
+
 import pymysql  # 引入刚才成功安装的数据库连接库
 import cv2       # 🆕 显式引入 OpenCV 用于图像 640x640 预处理
 import numpy as np # 🆕 引入 Numpy 用于画布矩阵操作
 from flask import Flask, request, jsonify
 from ultralytics import YOLO
 from flask_cors import CORS
-
-# =======================================================
-# 🆕 核心安全突破：解除 PyTorch 2.6+ 默认禁止反序列化未知类的限制
-# =======================================================
-torch.serialization.add_safe_globals([
-    'ultralytics.nn.tasks.DetectionModel',
-    'ultralytics.nn.modules.block.C2f',
-    'ultralytics.nn.modules.block.DFL',
-    'ultralytics.nn.modules.conv.Conv',
-    'ultralytics.nn.modules.head.Detect',
-    'ultralytics.nn.modules.block.Bottleneck',
-    'torch.nn.modules.container.Sequential',
-    'torch.nn.modules.container.ModuleList',
-    'torch.nn.modules.conv.Conv2d',
-    'torch.nn.modules.batchnorm.BatchNorm2d',
-    'torch.nn.modules.activation.SiLU',
-    'torch.nn.modules.pooling.MaxPool2d'
-])
 
 app = Flask(__name__)
 CORS(app)
@@ -181,7 +167,7 @@ def predict():
 
 
 # =======================================================
-# 🆕 3. 新增核心联动：提供数据拉取接口供前端可视化大屏和表格渲染
+# 3. 核心联动：提供数据拉取接口供前端可视化大屏和表格渲染
 # =======================================================
 @app.route('/api/dashboard_data', methods=['GET'])
 def get_dashboard_data():

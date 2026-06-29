@@ -1,10 +1,29 @@
 import os
+import torch   # 🌟 引入 torch 用于配置安全白名单
 import pymysql  # 引入刚才成功安装的数据库连接库
 import cv2       # 🆕 显式引入 OpenCV 用于图像 640x640 预处理
 import numpy as np # 🆕 引入 Numpy 用于画布矩阵操作
 from flask import Flask, request, jsonify
 from ultralytics import YOLO
 from flask_cors import CORS
+
+# =======================================================
+# 🆕 核心安全突破：解除 PyTorch 2.6+ 默认禁止反序列化未知类的限制
+# =======================================================
+torch.serialization.add_safe_globals([
+    'ultralytics.nn.tasks.DetectionModel',
+    'ultralytics.nn.modules.block.C2f',
+    'ultralytics.nn.modules.block.DFL',
+    'ultralytics.nn.modules.conv.Conv',
+    'ultralytics.nn.modules.head.Detect',
+    'ultralytics.nn.modules.block.Bottleneck',
+    'torch.nn.modules.container.Sequential',
+    'torch.nn.modules.container.ModuleList',
+    'torch.nn.modules.conv.Conv2d',
+    'torch.nn.modules.batchnorm.BatchNorm2d',
+    'torch.nn.modules.activation.SiLU',
+    'torch.nn.modules.pooling.MaxPool2d'
+])
 
 app = Flask(__name__)
 CORS(app)
@@ -125,13 +144,11 @@ def predict():
             try:
                 db = get_db_connection()
                 with db.cursor() as cursor:
-                    # 动作 A：向你在 Railway 建的 waste_records 表实时写入扫描历史大表
-                    # 备注：由于预测阶段通常来自前端匿名或当前登录用户，这里预留字段，图片路径存入相对路径
+                    # 动作 A：向历史大表实时写入扫描记录
                     sql_insert_record = """
                         INSERT INTO waste_records (username, record_type, material_type, image_path)
                         VALUES (%s, %s, %s, %s)
                     """
-                    # 假定默认用户为 'Guest'，记录银行为 'AI_Scan'
                     cursor.execute(sql_insert_record, ('Guest', 'AI_Scan', final_result, f"upload/{file.filename}"))
 
                     # 🌟 动作 B 完美保留：用于驱动前端仪表盘饼图实时暴涨
@@ -164,7 +181,35 @@ def predict():
 
 
 # =======================================================
-# 3. 保持原样：处理旧逻辑的兼容接口
+# 🆕 3. 新增核心联动：提供数据拉取接口供前端可视化大屏和表格渲染
+# =======================================================
+@app.route('/api/dashboard_data', methods=['GET'])
+def get_dashboard_data():
+    db = None
+    try:
+        db = get_db_connection()
+        with db.cursor() as cursor:
+            # 1. 查询所有垃圾桶当前的剩余容量与实时状态
+            cursor.execute("SELECT bin_name, current_volume, max_capacity, status, last_updated FROM recycle_bins;")
+            bins = cursor.fetchall()
+            
+            # 2. 查询最近 10 条垃圾扫描历史记录用来填满前端的表格
+            cursor.execute("SELECT id, username, record_type, material_type, image_path, created_at FROM waste_records ORDER BY created_at DESC LIMIT 10;")
+            records = cursor.fetchall()
+            
+        return jsonify({
+            "success": True,
+            "bins": bins,
+            "recent_records": records
+        })
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        if db: db.close()
+
+
+# =======================================================
+# 4. 保持原样：处理旧逻辑的兼容接口
 # =======================================================
 @app.route('/api/request_pickup', methods=['POST'])
 def request_pickup():
@@ -189,7 +234,7 @@ def request_pickup():
 
 
 # =======================================================
-# 4. 核心联动：前端点击 Cleared 按钮后直接请求这个接口清空容量
+# 5. 核心联动：前端点击 Cleared 按钮后直接请求这个接口清空容量
 # =======================================================
 @app.route('/api/reset_bin', methods=['POST'])
 def reset_bin():
@@ -214,10 +259,9 @@ def reset_bin():
 
 
 # =======================================================
-# 5. 自动化及外网服务发布配置
+# 6. 自动化及外网服务发布配置
 # =======================================================
 if __name__ == '__main__':
-    # 允许所有网络接口(0.0.0.0)访问，以便 Cloudflare Tunnel 正常进行本地请求的转发
     print("🚀 WasteScan Core AI Server (Production Mode) is initializing...")
     print("📍 Listening internally on port: 5001")
     app.run(host='0.0.0.0', port=5001, debug=False)

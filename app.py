@@ -1,6 +1,6 @@
 import os
 import pymysql  # 引入刚才成功安装的数据库连接库
-import cv2        # 🆕 显式引入 OpenCV 用于图像 640x640 预处理
+import cv2       # 🆕 显式引入 OpenCV 用于图像 640x640 预处理
 import numpy as np # 🆕 引入 Numpy 用于画布矩阵操作
 from flask import Flask, request, jsonify
 from ultralytics import YOLO
@@ -17,13 +17,15 @@ MODEL_PATH = os.path.join(BASE_DIR, 'models', 'best.pt')
 model = YOLO(MODEL_PATH)
 
 
-# 快捷连接 MySQL 数据库的辅助函数
+# 🌟 核心升级：连通 Railway 云端 MySQL 数据库
+# 优先读取 Railway 生产环境变量，若本地测试则回退到默认凭证
 def get_db_connection():
     return pymysql.connect(
-        host="localhost",
-        user="root",
-        password="",  # XAMPP 默认密码为空
-        database="wastescanaidb",
+        host=os.getenv("MYSQLHOST", "mysql.railway.internal"),
+        port=int(os.getenv("MYSQLPORT", 3306)),
+        user=os.getenv("MYSQLUSER", "root"),
+        password=os.getenv("MYSQLPASSWORD", "root"),
+        database=os.getenv("MYSQLDATABASE", "railway"),
         charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor
     )
@@ -61,7 +63,7 @@ def letterbox_resize(img_path, target_size=(640, 640)):
 
 
 # =======================================================
-# 2. AI 预测扫描 ➔ 仅更新垃圾桶状态（不再干扰历史总表）
+# 2. AI 预测扫描 ➔ 同步更新垃圾桶容量并生成历史记录
 # =======================================================
 @app.route('/predict', methods=['POST'])
 def predict():
@@ -123,6 +125,15 @@ def predict():
             try:
                 db = get_db_connection()
                 with db.cursor() as cursor:
+                    # 动作 A：向你在 Railway 建的 waste_records 表实时写入扫描历史大表
+                    # 备注：由于预测阶段通常来自前端匿名或当前登录用户，这里预留字段，图片路径存入相对路径
+                    sql_insert_record = """
+                        INSERT INTO waste_records (username, record_type, material_type, image_path)
+                        VALUES (%s, %s, %s, %s)
+                    """
+                    # 假定默认用户为 'Guest'，记录银行为 'AI_Scan'
+                    cursor.execute(sql_insert_record, ('Guest', 'AI_Scan', final_result, f"upload/{file.filename}"))
+
                     # 🌟 动作 B 完美保留：用于驱动前端仪表盘饼图实时暴涨
                     sql_update_bin = """
                         UPDATE recycle_bins 
@@ -132,7 +143,7 @@ def predict():
                     """
                     cursor.execute(sql_update_bin, (final_result,))
                 db.commit()
-                print(f"✅ [MySQL] Bin storage capacity synchronized successfully for: {final_result}")
+                print(f"✅ [MySQL] Record saved and bin storage capacity synchronized for: {final_result}")
             except Exception as db_err:
                 print(f"❌ [MySQL Error] Prediction database synch failed: {db_err}")
             finally:

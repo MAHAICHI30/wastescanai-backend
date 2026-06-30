@@ -148,13 +148,15 @@ def predict():
             try:
                 db = get_db_connection()
                 with db.cursor() as cursor:
-                    current_user = 'Guest'
+                    # 🌟【隔离核心修复】：动态获取前端通过 FormData 附带上传的 username 
+                    # 如果未登录或者获取不到，则统一标记为 'Visitor_Static'，保护已有用户时间数据不被覆盖污染
+                    current_user = request.form.get('username', 'Visitor_Static')
 
-                    # 🌟 终极时区补丁：在 Python 内部直接锁定本地 GMT+8 时间并转换为纯文本字符串
+                    # 🌟【时间极致同步】：在内存层锁死完全一致的时区对象并转化为文本串
                     tz_kl = timezone(timedelta(hours=8))  
                     local_now_str = datetime.now(tz_kl).strftime('%Y-%m-%d %H:%M:%S')
 
-                    # 1. 插入扫描记录历史（传入精准的本地时间字符串参数，绝不让数据库有机可乘）
+                    # 1. 插入扫描记录历史（使用同一 local_now_str 变量）
                     sql_insert_record = """
                         INSERT INTO waste_records (username, record_type, material_type, image_path, created_at)
                         VALUES (%s, %s, %s, %s, %s)
@@ -170,16 +172,18 @@ def predict():
                     """
                     cursor.execute(sql_update_bin, (final_result,))
 
-                    # 3. 更新用户最后活跃时间（使用完全相同的本地时间字符串）
-                    sql_update_user_active = """
-                        UPDATE users 
-                        SET last_active = %s 
-                        WHERE username = %s
-                    """
-                    cursor.execute(sql_update_user_active, (local_now_str, current_user))
+                    # 🌟【多用户动态拦截】：只有非游客、真正登录的合法用户才会去改动 users 表！
+                    # 没登录或不匹配的用户执行扫描时，本段逻辑跳过，其它的老用户的 last_active 保持冻结，绝不被串改影响！
+                    if current_user != 'Visitor_Static':
+                        sql_update_user_active = """
+                            UPDATE users 
+                            SET last_active = %s 
+                            WHERE username = %s
+                        """
+                        cursor.execute(sql_update_user_active, (local_now_str, current_user))
 
                 db.commit()
-                print(f"✅ [MySQL] Strictly synchronized time {local_now_str} across all tables for user '{current_user}'!")
+                print(f"✅ [User Isolated] Successfully updated time {local_now_str} strictly for active user '{current_user}'!")
             except Exception as db_err:
                 print(f"❌ [MySQL Error] Prediction database synch failed: {db_err}")
             finally:

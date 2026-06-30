@@ -3,7 +3,7 @@ from flask import Flask, request, jsonify
 from ultralytics import YOLO
 from flask_cors import CORS
 import pymysql  
-import cv2       
+import cv2        
 import numpy as np 
 
 app = Flask(__name__)
@@ -67,7 +67,7 @@ def letterbox_resize_matrix(img, target_size=(640, 640)):
 
 
 # =======================================================
-# 2. AI 预测扫描 ➔ 同步更新垃圾桶容量并生成历史记录
+# 2. AI 预测扫描 ➔ 同步更新垃圾桶容量、生成历史记录并更新用户活跃时间
 # =======================================================
 @app.route('/predict', methods=['POST'])
 def predict():
@@ -146,12 +146,16 @@ def predict():
             try:
                 db = get_db_connection()
                 with db.cursor() as cursor:
+                    current_user = 'Guest'
+
+                    # 1. 插入 AI 扫描记录历史
                     sql_insert_record = """
                         INSERT INTO waste_records (username, record_type, material_type, image_path)
                         VALUES (%s, %s, %s, %s)
                     """
-                    cursor.execute(sql_insert_record, ('Guest', 'AI_Scan', final_result, f"upload/{file_name_raw}"))
+                    cursor.execute(sql_insert_record, (current_user, 'AI_Scan', final_result, f"upload/{file_name_raw}"))
 
+                    # 2. 实时同步更新垃圾桶满载容量和状态
                     sql_update_bin = """
                         UPDATE recycle_bins 
                         SET current_volume = LEAST(current_volume + 5, 100),
@@ -159,8 +163,18 @@ def predict():
                         WHERE LOWER(bin_name) = LOWER(%s)
                     """
                     cursor.execute(sql_update_bin, (final_result,))
+
+                    # 🌟 核心联动突破：同步更新该用户的最后活跃时间（即最后扫描时间）
+                    # 利用了前面会话设置好的 '+08:00' 时区，使用 NOW() 写入的时间将完美和本地对齐！
+                    sql_update_user_active = """
+                        UPDATE users 
+                        SET last_active = NOW() 
+                        WHERE username = %s
+                    """
+                    cursor.execute(sql_update_user_active, (current_user,))
+
                 db.commit()
-                print(f"✅ [MySQL] Record saved and bin storage capacity synchronized for: {final_result}")
+                print(f"✅ [MySQL] Record saved, bin synchronized, and user '{current_user}' last_active updated for: {final_result}")
             except Exception as db_err:
                 print(f"❌ [MySQL Error] Prediction database synch failed: {db_err}")
             finally:

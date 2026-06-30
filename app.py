@@ -245,5 +245,9 @@ def reset_bin():
 # =======================================================
 if __name__ == '__main__':
     print("🚀 WasteScan Core AI Server (Production Mode) is initializing...")
-    print("📍 Listening internally on port: 5001")
-    app.run(host='0.0.0.0', port=5001, debug=False)
+    
+    # 🌟 核心修复：优先读取 Railway 分配的 PORT 环境变量，若本地测试则回退到 8080
+    port = int(os.environ.get("PORT", 8080))
+    print(f"📍 Listening internally on port: {port}")
+    
+    app.run(host='0.0.0.0', port=port, debug=False)

@@ -10,12 +10,11 @@ app = Flask(__name__)
 CORS(app)
 
 # =======================================================
-# 1. 自动定位并配置垃圾分类模型（🌟 核心改善：改为启动预加载）
+# 1. 自动定位并配置垃圾分类模型（启动预加载）
 # =======================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, 'best.pt')  
 
-# 🌟 核心突破：让服务器在启动时就在后台慢慢解压载入模型，彻底消除用户端首次点击的卡顿
 print("⚙️ [Boot Initialization] Pre-loading YOLOv8 weights into memory...")
 try:
     model = YOLO(MODEL_PATH)
@@ -25,9 +24,9 @@ except Exception as e:
     model = None
 
 
-# 连通 Railway 云端 MySQL 数据库
+# 🌟 终极改善：连通 Railway 云端 MySQL 数据库并强行对齐本地 +8 时区
 def get_db_connection():
-    return pymysql.connect(
+    conn = pymysql.connect(
         host=os.getenv("MYSQLHOST", "mysql.railway.internal"),
         port=int(os.getenv("MYSQLPORT", 3306)),
         user=os.getenv("MYSQLUSER", "root"),
@@ -36,11 +35,15 @@ def get_db_connection():
         charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor
     )
+    # 🌟 核心突破：强行让本次会话对齐本地时区，誓死消灭 8 小时提交时差隐患！
+    with conn.cursor() as cursor:
+        cursor.execute("SET time_zone = '+08:00';")
+    return conn
 
 
 def letterbox_resize_matrix(img, target_size=(640, 640)):
     """
-    🆕 内存级优化方案：直接对内存中的图像矩阵进行自适应等比例缩放和居中黑边填充，
+    内存级优化方案：直接对内存中的图像矩阵进行自适应等比例缩放和居中黑边填充，
     彻底告别因磁盘 I/O 延迟带来的图片读取不到的硬伤。
     """
     h, w = img.shape[:2]
@@ -68,9 +71,8 @@ def letterbox_resize_matrix(img, target_size=(640, 640)):
 # =======================================================
 @app.route('/predict', methods=['POST'])
 def predict():
-    global model  # 引用全局已加载好的模型
+    global model  
     
-    # 💡 强力防御：如果由于某种原因 boot 时模型加载失败，这里做一个二次兜底激活
     if model is None:
         print("⚠️ [AI Engine Warning] Model is uninitialized. Trying to initialize now...")
         try:
@@ -84,7 +86,6 @@ def predict():
     file = request.files['image']
     file_name_raw = file.filename
     
-    # 直接在内存中把文件流解码为 OpenCV 矩阵，绝不发生 I/O 等待卡顿
     try:
         file_bytes = np.frombuffer(file.read(), np.uint8)
         img_mat = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
@@ -93,11 +94,9 @@ def predict():
     except Exception as img_err:
         return jsonify({"status": "error", "message": f"Image decode failed: {img_err}"}), 400
     
-    # 执行 640 x 640 内存级图像等比例缩放与黑边填充
     try:
         img_ready = letterbox_resize_matrix(img_mat, target_size=(640, 640))
         
-        # 将优化好的图片留存一份到本地 upload 目录中，供前端/历史记录查阅
         upload_dir = os.path.join(BASE_DIR, 'upload')
         os.makedirs(upload_dir, exist_ok=True)
         img_path = os.path.join(upload_dir, file_name_raw)
@@ -112,7 +111,6 @@ def predict():
         img_ready = img_mat
     
     try:
-        # 此时传入的图片已经是完美的内存矩阵，由于模型早已就绪，这里将是微秒级响应！
         results = model.predict(source=img_ready, conf=0.35, workers=0)
         best_detection = None
         highest_conf = 0.0
@@ -128,7 +126,7 @@ def predict():
                         x1, y1, x2, y2 = coords[0], coords[1], coords[2], coords[3]
                         
                         class_id = int(box.cls[0])
-                        class_name = model.names[class_id]  # aluminium, paper, plastic
+                        class_name = model.names[class_id]  
 
                         top_pct = y1 * 100
                         left_pct = x1 * 100

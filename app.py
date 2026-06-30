@@ -5,6 +5,8 @@ from flask_cors import CORS
 import pymysql  
 import cv2        
 import numpy as np 
+# 🌟 核心修正：引入 datetime 和 timedelta 模块，实现内存级时区锁定
+from datetime import datetime, timezone, timedelta
 
 app = Flask(__name__)
 CORS(app)
@@ -148,12 +150,16 @@ def predict():
                 with db.cursor() as cursor:
                     current_user = 'Guest'
 
-                    # 🌟 核心突破 1：显式写入 created_at，强行让扫描记录表吃会话内的 NOW()（对齐本地时间）
+                    # 🌟 终极时区补丁：在 Python 内部直接锁定本地 GMT+8 时间并转换为纯文本字符串
+                    tz_kl = timezone(timedelta(hours=8))  
+                    local_now_str = datetime.now(tz_kl).strftime('%Y-%m-%d %H:%M:%S')
+
+                    # 1. 插入扫描记录历史（传入精准的本地时间字符串参数，绝不让数据库有机可乘）
                     sql_insert_record = """
                         INSERT INTO waste_records (username, record_type, material_type, image_path, created_at)
-                        VALUES (%s, %s, %s, %s, NOW())
+                        VALUES (%s, %s, %s, %s, %s)
                     """
-                    cursor.execute(sql_insert_record, (current_user, 'AI_Scan', final_result, f"upload/{file_name_raw}"))
+                    cursor.execute(sql_insert_record, (current_user, 'AI_Scan', final_result, f"upload/{file_name_raw}", local_now_str))
 
                     # 2. 实时同步更新垃圾桶满载容量和状态
                     sql_update_bin = """
@@ -164,16 +170,16 @@ def predict():
                     """
                     cursor.execute(sql_update_bin, (final_result,))
 
-                    # 🌟 核心突破 2：用完全相同的同一个 NOW() 更新用户最后活跃时间
+                    # 3. 更新用户最后活跃时间（使用完全相同的本地时间字符串）
                     sql_update_user_active = """
                         UPDATE users 
-                        SET last_active = NOW() 
+                        SET last_active = %s 
                         WHERE username = %s
                     """
-                    cursor.execute(sql_update_user_active, (current_user,))
+                    cursor.execute(sql_update_user_active, (local_now_str, current_user))
 
                 db.commit()
-                print(f"✅ [MySQL] Dual-tables strictly synchronized with local time (NOW()) for user '{current_user}'!")
+                print(f"✅ [MySQL] Strictly synchronized time {local_now_str} across all tables for user '{current_user}'!")
             except Exception as db_err:
                 print(f"❌ [MySQL Error] Prediction database synch failed: {db_err}")
             finally:
@@ -242,7 +248,7 @@ def request_pickup():
 
 
 # =======================================================
-# 5. 清清空容量接口
+# 5. 清空容量接口
 # =======================================================
 @app.route('/api/reset_bin', methods=['POST'])
 def reset_bin():

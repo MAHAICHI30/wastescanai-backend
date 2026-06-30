@@ -75,8 +75,8 @@ def predict():
     file = request.files['image']
     file_name_raw = file.filename
     
-    # 🌟 动态接收 PHP 通过 cURL 穿透投递过来的真实会话用户名与上传身份
-    current_user = request.form.get('username', 'Guest')
+  # 🌟【清洗防错补丁】：强行去掉可能被 cURL 夹带的 \r \n 空格等所有隐形字符
+current_user = request.form.get('username', 'Guest').strip()
     identity = request.form.get('identity', 'scan') 
     
     # 智能对齐数据字典映射：camera_scan -> scan, gallery_upload -> upload

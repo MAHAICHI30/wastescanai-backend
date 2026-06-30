@@ -7,13 +7,12 @@ import cv2
 import numpy as np 
 from datetime import datetime, timezone, timedelta
 
-# 🌟 1. 必须先实例化 Flask 核心应用对象（这一步要在所有路由的前面！）
+# =======================================================
+# 1. 核心应用初始化与模型预加载
+# =======================================================
 app = Flask(__name__)
 CORS(app)
 
-# =======================================================
-# 自动定位并配置垃圾分类模型（启动预加载）
-# =======================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, 'best.pt')  
 
@@ -27,6 +26,7 @@ except Exception as e:
 
 
 def get_db_connection():
+    """建立自适应 Railway 拓扑结构的内网数据库会话并强制锁定 GMT+8 时区"""
     conn = pymysql.connect(
         host=os.getenv("MYSQLHOST", "mysql.railway.internal"),
         port=int(os.getenv("MYSQLPORT", 3306)),
@@ -42,6 +42,7 @@ def get_db_connection():
 
 
 def letterbox_resize_matrix(img, target_size=(640, 640)):
+    """内存级自适应等比例缩放与纯黑画布居中填充算法"""
     h, w = img.shape[:2]
     th, tw = target_size
     scale = min(tw / w, th / h)
@@ -55,7 +56,7 @@ def letterbox_resize_matrix(img, target_size=(640, 640)):
 
 
 # =======================================================
-# 2. AI 预测扫描 ➔ 同步更新垃圾桶容量、生成历史记录并更新用户活跃时间
+# 2. AI 核心预测流控制（解耦并确保 100% 留痕入库）
 # =======================================================
 @app.route('/predict', methods=['POST'])
 def predict():
@@ -74,12 +75,14 @@ def predict():
     file = request.files['image']
     file_name_raw = file.filename
     
-    # 🌟 动态接收 PHP 通过 Post 传过来的用户名与上传身份
+    # 🌟 动态接收 PHP 通过 cURL 穿透投递过来的真实会话用户名与上传身份
     current_user = request.form.get('username', 'Guest')
     identity = request.form.get('identity', 'scan') 
     
+    # 智能对齐数据字典映射：camera_scan -> scan, gallery_upload -> upload
     record_type = 'upload' if identity == 'gallery_upload' else 'scan'
     
+    # 将上传的文件流直接解码到内存矩阵，告别磁盘死锁
     try:
         file_bytes = np.frombuffer(file.read(), np.uint8)
         img_mat = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
@@ -88,6 +91,7 @@ def predict():
     except Exception as img_err:
         return jsonify({"status": "error", "message": f"Image decode failed: {img_err}"}), 400
     
+    # 图像预处理与本地缓存持久化
     try:
         img_ready = letterbox_resize_matrix(img_mat, target_size=(640, 640))
         upload_dir = os.path.join(BASE_DIR, 'upload')
@@ -101,6 +105,7 @@ def predict():
         cv2.imwrite(img_path, img_mat)
         img_ready = img_mat
     
+    # 推理主循环
     try:
         results = model.predict(source=img_ready, conf=0.35, workers=0)
         best_detection = None
@@ -123,23 +128,35 @@ def predict():
                             "box_css": [y1 * 100, x1 * 100, (y2 - y1) * 100, (x2 - x1) * 100]
                         }
         
+        # 🌟【RUP 核心优化点】：计算并统一判定输出状态。不管模型抓没抓到，下面的落库全都会执行！
         if best_detection:
             final_result = best_detection["class_name"]
             final_box = best_detection["box_css"]
-            
-            db = None  
-            try:
-                db = get_db_connection()
-                with db.cursor() as cursor:
-                    tz_kl = timezone(timedelta(hours=8))  
-                    local_now_str = datetime.now(tz_kl).strftime('%Y-%m-%d %H:%M:%S')
+            is_detected = True
+        else:
+            final_result = "unknown"
+            final_box = [15, 15, 70, 70] 
+            is_detected = False
+            print(f"⚠️ [AI Engine] Object unrecognized. Fallback to 'unknown' record status.")
 
-                    sql_insert_record = """
-                        INSERT INTO waste_records (username, record_type, material_type, image_path, created_at)
-                        VALUES (%s, %s, %s, %s, %s)
-                    """
-                    cursor.execute(sql_insert_record, (current_user, record_type, final_result, f"upload/{file_name_raw}", local_now_str))
+        # 🌟【业务层完全独立】：强行剥离控制流。确保无论是有效塑料/铝/纸还是未识别，统统留痕！
+        db = None  
+        try:
+            db = get_db_connection()
+            with db.cursor() as cursor:
+                # 强行捕获高精度的 GMT+8 本地时间纯文本，防止数据库时区漂移
+                tz_kl = timezone(timedelta(hours=8))  
+                local_now_str = datetime.now(tz_kl).strftime('%Y-%m-%d %H:%M:%S')
 
+                # 1. 记入核心流水历史表（包含精准捕获的动态 current_user 和 record_type）
+                sql_insert_record = """
+                    INSERT INTO waste_records (username, record_type, material_type, image_path, created_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                """
+                cursor.execute(sql_insert_record, (current_user, record_type, final_result, f"upload/{file_name_raw}", local_now_str))
+
+                # 2. 实时更新公共实体垃圾桶容量（只有在识别出合法分类目标时容量才累加递增）
+                if is_detected:
                     sql_update_bin = """
                         UPDATE recycle_bins  
                         SET current_volume = LEAST(current_volume + 5, 100),
@@ -148,23 +165,22 @@ def predict():
                     """
                     cursor.execute(sql_update_bin, (final_result,))
 
-                    sql_update_user_active = """
-                        UPDATE users  
-                        SET last_active = %s  
-                        WHERE username = %s
-                    """
-                    cursor.execute(sql_update_user_active, (local_now_str, current_user))
+                # 3. 任何扫描和上传动作都算作账户活跃，刷新安全用户表活跃时间戳
+                sql_update_user_active = """
+                    UPDATE users  
+                    SET last_active = %s  
+                    WHERE username = %s
+                """
+                cursor.execute(sql_update_user_active, (local_now_str, current_user))
 
-                db.commit()
-            except Exception as db_err:
-                print(f"❌ [MySQL Error] Prediction database synch failed: {db_err}")
-            finally:
-                if db: db.close()
-                
-        else:
-            final_result = "unknown"
-            final_box = [15, 15, 70, 70] 
+            db.commit()
+            print(f"✅ [MySQL] Successfully synced database record ({final_result}) across all entities for '{current_user}'!")
+        except Exception as db_err:
+            print(f"❌ [MySQL Error] Prediction transactional replication failed: {db_err}")
+        finally:
+            if db: db.close()
         
+        # 将标准 AI 结果交还给 PHP 网关
         return jsonify({
             "status": "success",
             "prediction": final_result,
@@ -176,7 +192,7 @@ def predict():
 
 
 # =======================================================
-# 3. 提供数据拉取接口供前端可视化大屏和表格渲染
+# 3. 提供数据拉取接口（大屏及表单渲染）
 # =======================================================
 @app.route('/api/dashboard_data', methods=['GET'])
 def get_dashboard_data():
@@ -201,7 +217,7 @@ def get_dashboard_data():
 
 
 # =======================================================
-# 4. 处理旧逻辑的兼容接口
+# 4. 派单请求流转兼容接口
 # =======================================================
 @app.route('/api/request_pickup', methods=['POST'])
 def request_pickup():
@@ -224,7 +240,7 @@ def request_pickup():
 
 
 # =======================================================
-# 5. 清空容量接口
+# 5. 清空重置接口
 # =======================================================
 @app.route('/api/reset_bin', methods=['POST'])
 def reset_bin():

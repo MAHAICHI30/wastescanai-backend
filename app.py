@@ -10,13 +10,13 @@ app = Flask(__name__)
 CORS(app)
 
 # =======================================================
-# 1. 自动定位并加载垃圾分类模型
+# 1. 自动定位并配置垃圾分类模型（延迟加载）
 # =======================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, 'best.pt')  
-model = YOLO(MODEL_PATH)
 
-# ... 后面剩下的接口和逻辑代码保持不变 ...
+# 🌟 核心修复：声明全局模型缓存变量，不再在启动时硬加载，防止内存瞬间卡死
+model = None
 
 # 🌟 核心升级：连通 Railway 云端 MySQL 数据库
 # 优先读取 Railway 生产环境变量，若本地测试则回退到默认凭证
@@ -68,6 +68,8 @@ def letterbox_resize(img_path, target_size=(640, 640)):
 # =======================================================
 @app.route('/predict', methods=['POST'])
 def predict():
+    global model  # 引用全局模型缓存
+    
     if 'image' not in request.files:
         return jsonify({"status": "error", "message": "No image file uploaded"}), 400
         
@@ -80,14 +82,26 @@ def predict():
     file.save(img_path)
     
     # =======================================================
-    # 🌟 核心突破注入：显式执行 640 x 640 图像预处理与尺寸调整
+    # 🌟 核心突破注入：当有请求进来时，才在内网初次延迟激活 YOLO 模型
+    # =======================================================
+    if model is None:
+        print("⚙️ [AI Engine] Detected first request. Loading YOLOv8 weights into RAM...")
+        try:
+            model = YOLO(MODEL_PATH)
+            print("🎯 [AI Engine] Model successfully weights loaded and cached!")
+        except Exception as load_err:
+            print(f"❌ [AI Engine Error] Lazy loading weights failed: {load_err}")
+            return jsonify({"status": "error", "message": f"Model initialization error: {load_err}"}), 500
+    # =======================================================
+    
+    # =======================================================
+    # 执行 640 x 640 图像预处理与尺寸调整
     # =======================================================
     try:
         letterbox_resize(img_path, target_size=(640, 640))
         print(f"⚙️ [Preprocessing] Image successfully optimized and resized to 640x640: {file.filename}")
     except Exception as prep_err:
         print(f"⚠️ [Preprocessing Warning] Letterbox resize failed: {prep_err}")
-    # =======================================================
     
     try:
         # 此时传入的图片已完美调整为标准 640x640 分辨率
@@ -122,7 +136,7 @@ def predict():
             final_result = best_detection["class_name"]
             final_box = best_detection["box_css"]
             
-            db = None  # 🌟 修正：在此处初始化，防止未定义数据库连接时触发 finally 报错
+            db = None  # 在此处初始化，防止未定义数据库连接时触发 finally 报错
             try:
                 db = get_db_connection()
                 with db.cursor() as cursor:
@@ -133,7 +147,7 @@ def predict():
                     """
                     cursor.execute(sql_insert_record, ('Guest', 'AI_Scan', final_result, f"upload/{file.filename}"))
 
-                    # 🌟 动作 B 完美保留：用于驱动前端仪表盘饼图实时暴涨
+                    # 动作 B：用于驱动前端仪表盘饼图实时暴涨
                     sql_update_bin = """
                         UPDATE recycle_bins 
                         SET current_volume = LEAST(current_volume + 5, 100),
@@ -246,7 +260,7 @@ def reset_bin():
 if __name__ == '__main__':
     print("🚀 WasteScan Core AI Server (Production Mode) is initializing...")
     
-    # 🌟 核心修复：优先读取 Railway 分配的 PORT 环境变量，若本地测试则回退到 8080
+    # 优先读取 Railway 分配的 PORT 环境变量，若本地测试则回退到 8080
     port = int(os.environ.get("PORT", 8080))
     print(f"📍 Listening internally on port: {port}")
     

@@ -5,6 +5,7 @@ from flask_cors import CORS
 import pymysql  
 import cv2        
 import numpy as np 
+# 🌟 核心修正：引入 datetime 和 timedelta 模块，实现内存级时区锁定
 from datetime import datetime, timezone, timedelta
 
 app = Flask(__name__)
@@ -25,8 +26,8 @@ except Exception as e:
     model = None
 
 
+# 🌟 终极改善：连通 Railway 云端 MySQL 数据库并强行对齐本地 +8 时区
 def get_db_connection():
-    """连通 Railway 云端 MySQL 数据库并强行对齐本地 +8 时区"""
     conn = pymysql.connect(
         host=os.getenv("MYSQLHOST", "mysql.railway.internal"),
         port=int(os.getenv("MYSQLPORT", 3306)),
@@ -36,22 +37,31 @@ def get_db_connection():
         charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor
     )
+    # 🌟 核心突破：强行让本次会话对齐本地时区，誓死消灭 8 小时提交时差隐患！
     with conn.cursor() as cursor:
         cursor.execute("SET time_zone = '+08:00';")
     return conn
 
 
 def letterbox_resize_matrix(img, target_size=(640, 640)):
-    """内存级优化方案：等比例缩放和居中黑边填充"""
+    """
+    内存级优化方案：直接对内存中的图像矩阵进行自适应等比例缩放和居中黑边填充，
+    彻底告别因磁盘 I/O 延迟带来的图片读取不到的硬伤。
+    """
     h, w = img.shape[:2]
     th, tw = target_size
 
+    # 计算自适应最佳缩放比例
     scale = min(tw / w, th / h)
     nw, nh = int(w * scale), int(h * scale)
 
+    # 等比例缩放图像
     img_resized = cv2.resize(img, (nw, nh))
+
+    # 创建一个 640x640 的纯黑画布
     background = np.zeros((th, tw, 3), dtype=np.uint8)
 
+    # 将缩放后的图像居中粘贴至黑色画布上
     dx = (tw - nw) // 2
     dy = (th - nh) // 2
     background[dy:dy+nh, dx:dx+nw] = img_resized
@@ -88,6 +98,7 @@ def predict():
     
     try:
         img_ready = letterbox_resize_matrix(img_mat, target_size=(640, 640))
+        
         upload_dir = os.path.join(BASE_DIR, 'upload')
         os.makedirs(upload_dir, exist_ok=True)
         img_path = os.path.join(upload_dir, file_name_raw)
@@ -110,6 +121,7 @@ def predict():
             if result.boxes is not None:
                 for box in result.boxes:
                     conf_score = float(box.conf[0])
+                    
                     if conf_score > highest_conf:
                         highest_conf = conf_score
                         coords = box.xyxyn[0].tolist()
@@ -136,41 +148,39 @@ def predict():
             try:
                 db = get_db_connection()
                 with db.cursor() as cursor:
-                    current_user = request.form.get('username', 'Visitor_Static')
+                    current_user = 'Guest'
 
-                    # 内存层锁死 +8 时区
+                    # 🌟 终极时区补丁：在 Python 内部直接锁定本地 GMT+8 时间并转换为纯文本字符串
                     tz_kl = timezone(timedelta(hours=8))  
                     local_now_str = datetime.now(tz_kl).strftime('%Y-%m-%d %H:%M:%S')
 
-                    # 1. 插入扫描记录历史
+                    # 1. 插入扫描记录历史（传入精准的本地时间字符串参数，绝不让数据库有机可乘）
                     sql_insert_record = """
                         INSERT INTO waste_records (username, record_type, material_type, image_path, created_at)
                         VALUES (%s, %s, %s, %s, %s)
                     """
                     cursor.execute(sql_insert_record, (current_user, 'AI_Scan', final_result, f"upload/{file_name_raw}", local_now_str))
 
-                    # 2. 实时同步更新垃圾桶满载容量和状态 (🌟 Bug修复：修正表达式右侧评估逻辑漏洞)
+                    # 2. 实时同步更新垃圾桶满载容量和状态
                     sql_update_bin = """
                         UPDATE recycle_bins 
                         SET current_volume = LEAST(current_volume + 5, 100),
-                            status = CASE WHEN LEAST(current_volume + 5, 100) >= 95 THEN 'Full' ELSE status END
+                            status = CASE WHEN current_volume + 5 >= 95 THEN 'Full' ELSE status END
                         WHERE LOWER(bin_name) = LOWER(%s)
                     """
                     cursor.execute(sql_update_bin, (final_result,))
 
-                    # 3. 多用户动态拦截
-                    if current_user != 'Visitor_Static':
-                        sql_update_user_active = """
-                            UPDATE users 
-                            SET last_active = %s 
-                            WHERE username = %s
-                        """
-                        cursor.execute(sql_update_user_active, (local_now_str, current_user))
+                    # 3. 更新用户最后活跃时间（使用完全相同的本地时间字符串）
+                    sql_update_user_active = """
+                        UPDATE users 
+                        SET last_active = %s 
+                        WHERE username = %s
+                    """
+                    cursor.execute(sql_update_user_active, (local_now_str, current_user))
 
                 db.commit()
-                print(f"✅ [User Isolated] Successfully updated time {local_now_str} strictly for active user '{current_user}'!")
+                print(f"✅ [MySQL] Strictly synchronized time {local_now_str} across all tables for user '{current_user}'!")
             except Exception as db_err:
-                if db: db.rollback() # 🌟 安全隐患修复：失败时强制回滚事务
                 print(f"❌ [MySQL Error] Prediction database synch failed: {db_err}")
             finally:
                 if db: db.close()
@@ -198,20 +208,9 @@ def get_dashboard_data():
     try:
         db = get_db_connection()
         with db.cursor() as cursor:
-            # 🌟 修复隐患：显式使用 DATE_FORMAT 转换时间，防止 Flask jsonify 序列化 datetime 崩溃
-            cursor.execute("""
-                SELECT bin_name, current_volume, max_capacity, status, 
-                       DATE_FORMAT(last_updated, '%%Y-%%m-%%d %%H:%%i:%%s') as last_updated 
-                FROM recycle_bins;
-            """)
+            cursor.execute("SELECT bin_name, current_volume, max_capacity, status, last_updated FROM recycle_bins;")
             bins = cursor.fetchall()
-            
-            cursor.execute("""
-                SELECT id, username, record_type, material_type, image_path, 
-                       DATE_FORMAT(created_at, '%%Y-%%m-%%d %%H:%%i:%%s') as created_at 
-                FROM waste_records 
-                ORDER BY created_at DESC LIMIT 10;
-            """)
+            cursor.execute("SELECT id, username, record_type, material_type, image_path, created_at FROM waste_records ORDER BY created_at DESC LIMIT 10;")
             records = cursor.fetchall()
             
         return jsonify({
@@ -232,8 +231,8 @@ def get_dashboard_data():
 def request_pickup():
     db = None
     try:
-        data = request.get_json() or {}
-        bin_type = data.get('bin_type', '')
+        data = request.get_json()
+        bin_type = data.get('bin_type')
         db_bin_name = bin_type.lower()
         
         db = get_db_connection()
@@ -243,7 +242,6 @@ def request_pickup():
         db.commit()
         return jsonify({"success": True, "message": f"{bin_type} Bin state已成功流转为派单状态！"})
     except Exception as e:
-        if db: db.rollback()
         return jsonify({"success": False, "message": str(e)}), 500
     finally:
         if db: db.close()
@@ -256,8 +254,8 @@ def request_pickup():
 def reset_bin():
     db = None
     try:
-        data = request.get_json() or {}
-        bin_type = data.get('bin_type', '')
+        data = request.get_json()
+        bin_type = data.get('bin_type')
         db_bin_name = bin_type.lower()
         
         db = get_db_connection()
@@ -267,7 +265,6 @@ def reset_bin():
         db.commit()
         return jsonify({"success": True, "message": f"{bin_type} Bin reset success."})
     except Exception as e:
-        if db: db.rollback()
         return jsonify({"success": False, "message": str(e)}), 500
     finally:
         if db: db.close()

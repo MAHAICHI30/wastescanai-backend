@@ -10,13 +10,20 @@ app = Flask(__name__)
 CORS(app)
 
 # =======================================================
-# 1. 自动定位并配置垃圾分类模型（延迟加载）
+# 1. 自动定位并配置垃圾分类模型（🌟 核心改善：改为启动预加载）
 # =======================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, 'best.pt')  
 
-# 声明全局模型缓存变量，不再在启动时硬加载，防止内存瞬间卡死
-model = None
+# 🌟 核心突破：让服务器在启动时就在后台慢慢解压载入模型，彻底消除用户端首次点击的卡顿
+print("⚙️ [Boot Initialization] Pre-loading YOLOv8 weights into memory...")
+try:
+    model = YOLO(MODEL_PATH)
+    print("🎯 [Boot Initialization] YOLOv8 Model successfully pre-loaded and cached!")
+except Exception as e:
+    print(f"❌ [Boot Error] Failed to pre-load model weights: {e}")
+    model = None
+
 
 # 连通 Railway 云端 MySQL 数据库
 def get_db_connection():
@@ -61,15 +68,23 @@ def letterbox_resize_matrix(img, target_size=(640, 640)):
 # =======================================================
 @app.route('/predict', methods=['POST'])
 def predict():
-    global model  # 引用全局模型缓存
+    global model  # 引用全局已加载好的模型
     
+    # 💡 强力防御：如果由于某种原因 boot 时模型加载失败，这里做一个二次兜底激活
+    if model is None:
+        print("⚠️ [AI Engine Warning] Model is uninitialized. Trying to initialize now...")
+        try:
+            model = YOLO(MODEL_PATH)
+        except Exception as err:
+            return jsonify({"status": "error", "message": f"Model is totally unavailable: {err}"}), 500
+
     if 'image' not in request.files:
         return jsonify({"status": "error", "message": "No image file uploaded"}), 400
         
     file = request.files['image']
     file_name_raw = file.filename
     
-    # 🌟 核心优化：直接在内存中把文件流解码为 OpenCV 矩阵，绝不发生 I/O 等待卡顿
+    # 直接在内存中把文件流解码为 OpenCV 矩阵，绝不发生 I/O 等待卡顿
     try:
         file_bytes = np.frombuffer(file.read(), np.uint8)
         img_mat = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
@@ -77,16 +92,6 @@ def predict():
             raise ValueError("Uploaded file is not a valid image")
     except Exception as img_err:
         return jsonify({"status": "error", "message": f"Image decode failed: {img_err}"}), 400
-
-    # 延迟加载激活 YOLO 模型
-    if model is None:
-        print("⚙️ [AI Engine] Detected first request. Loading YOLOv8 weights into RAM...")
-        try:
-            model = YOLO(MODEL_PATH)
-            print("🎯 [AI Engine] Model successfully weights loaded and cached!")
-        except Exception as load_err:
-            print(f"❌ [AI Engine Error] Lazy loading weights failed: {load_err}")
-            return jsonify({"status": "error", "message": f"Model initialization error: {load_err}"}), 500
     
     # 执行 640 x 640 内存级图像等比例缩放与黑边填充
     try:
@@ -100,7 +105,6 @@ def predict():
         print(f"⚙️ [Preprocessing] Image successfully optimized and written to cache: {file_name_raw}")
     except Exception as prep_err:
         print(f"⚠️ [Preprocessing Warning] Letterbox optimization failed, fallback to raw: {prep_err}")
-        # 如果预处理意外失败，回退并直接写盘
         upload_dir = os.path.join(BASE_DIR, 'upload')
         os.makedirs(upload_dir, exist_ok=True)
         img_path = os.path.join(upload_dir, file_name_raw)
@@ -108,7 +112,7 @@ def predict():
         img_ready = img_mat
     
     try:
-        # 此时传入已完美转换为标准的 640x640 矩阵或原矩阵进行预测
+        # 此时传入的图片已经是完美的内存矩阵，由于模型早已就绪，这里将是微秒级响应！
         results = model.predict(source=img_ready, conf=0.35, workers=0)
         best_detection = None
         highest_conf = 0.0
@@ -179,7 +183,7 @@ def predict():
 
 
 # =======================================================
-# 3. 核心联动：提供数据拉取接口供前端可视化大屏和表格渲染
+# 3. 提供数据拉取接口供前端可视化大屏和表格渲染
 # =======================================================
 @app.route('/api/dashboard_data', methods=['GET'])
 def get_dashboard_data():
@@ -204,7 +208,7 @@ def get_dashboard_data():
 
 
 # =======================================================
-# 4. 保持原样：处理旧逻辑的兼容接口
+# 4. 处理旧逻辑的兼容接口
 # =======================================================
 @app.route('/api/request_pickup', methods=['POST'])
 def request_pickup():
@@ -219,8 +223,6 @@ def request_pickup():
             sql = "UPDATE recycle_bins SET status = 'Dispatched' WHERE LOWER(bin_name) = %s"
             cursor.execute(sql, (db_bin_name,))
         db.commit()
-        
-        print(f"🔥 [MySQL] Successfully set {bin_type} status to 'Dispatched' in database.")
         return jsonify({"success": True, "message": f"{bin_type} Bin state已成功流转为派单状态！"})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
@@ -229,7 +231,7 @@ def request_pickup():
 
 
 # =======================================================
-# 5. 核心联动：前端点击 Cleared 按钮后直接请求这个接口清空容量
+# 5. 清空容量接口
 # =======================================================
 @app.route('/api/reset_bin', methods=['POST'])
 def reset_bin():
@@ -244,8 +246,6 @@ def reset_bin():
             sql = "UPDATE recycle_bins SET current_volume = 0, status = 'Normal' WHERE LOWER(bin_name) = %s"
             cursor.execute(sql, (db_bin_name,))
         db.commit()
-        
-        print(f"🔄 [MySQL] Successfully reset {bin_type} Bin data back to 0% and 'Normal' status.")
         return jsonify({"success": True, "message": f"{bin_type} Bin reset success."})
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
@@ -253,9 +253,6 @@ def reset_bin():
         if db: db.close()
 
 
-# =======================================================
-# 6. 自动化及外网服务发布配置
-# =======================================================
 if __name__ == '__main__':
     print("🚀 WasteScan Core AI Server (Production Mode) is initializing...")
     port = int(os.environ.get("PORT", 8080))

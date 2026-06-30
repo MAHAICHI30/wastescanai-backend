@@ -148,10 +148,10 @@ def predict():
                 with db.cursor() as cursor:
                     current_user = 'Guest'
 
-                    # 1. 插入 AI 扫描记录历史
+                    # 🌟 核心突破 1：显式写入 created_at，强行让扫描记录表吃会话内的 NOW()（对齐本地时间）
                     sql_insert_record = """
-                        INSERT INTO waste_records (username, record_type, material_type, image_path)
-                        VALUES (%s, %s, %s, %s)
+                        INSERT INTO waste_records (username, record_type, material_type, image_path, created_at)
+                        VALUES (%s, %s, %s, %s, NOW())
                     """
                     cursor.execute(sql_insert_record, (current_user, 'AI_Scan', final_result, f"upload/{file_name_raw}"))
 
@@ -164,8 +164,7 @@ def predict():
                     """
                     cursor.execute(sql_update_bin, (final_result,))
 
-                    # 🌟 核心联动突破：同步更新该用户的最后活跃时间（即最后扫描时间）
-                    # 利用了前面会话设置好的 '+08:00' 时区，使用 NOW() 写入的时间将完美和本地对齐！
+                    # 🌟 核心突破 2：用完全相同的同一个 NOW() 更新用户最后活跃时间
                     sql_update_user_active = """
                         UPDATE users 
                         SET last_active = NOW() 
@@ -174,7 +173,7 @@ def predict():
                     cursor.execute(sql_update_user_active, (current_user,))
 
                 db.commit()
-                print(f"✅ [MySQL] Record saved, bin synchronized, and user '{current_user}' last_active updated for: {final_result}")
+                print(f"✅ [MySQL] Dual-tables strictly synchronized with local time (NOW()) for user '{current_user}'!")
             except Exception as db_err:
                 print(f"❌ [MySQL Error] Prediction database synch failed: {db_err}")
             finally:
@@ -243,7 +242,7 @@ def request_pickup():
 
 
 # =======================================================
-# 5. 清空容量接口
+# 5. 清清空容量接口
 # =======================================================
 @app.route('/api/reset_bin', methods=['POST'])
 def reset_bin():

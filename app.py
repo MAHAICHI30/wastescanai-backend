@@ -15,11 +15,10 @@ CORS(app)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, 'best.pt')  
 
-# 🌟 核心修复：声明全局模型缓存变量，不再在启动时硬加载，防止内存瞬间卡死
+# 声明全局模型缓存变量，不再在启动时硬加载，防止内存瞬间卡死
 model = None
 
-# 🌟 核心升级：连通 Railway 云端 MySQL 数据库
-# 优先读取 Railway 生产环境变量，若本地测试则回退到默认凭证
+# 连通 Railway 云端 MySQL 数据库
 def get_db_connection():
     return pymysql.connect(
         host=os.getenv("MYSQLHOST", "mysql.railway.internal"),
@@ -32,15 +31,11 @@ def get_db_connection():
     )
 
 
-def letterbox_resize(img_path, target_size=(640, 640)):
+def letterbox_resize_matrix(img, target_size=(640, 640)):
     """
-    🆕 核心解决方案：保持宽高比等比例缩放图片，并用黑色填充到指定的 640x640 分辨率。
-    此举能有效解决因图像尺寸不规整、比例失调带来的 YOLOv8 目标检测失败（Detection Failures）挑战。
+    🆕 内存级优化方案：直接对内存中的图像矩阵进行自适应等比例缩放和居中黑边填充，
+    彻底告别因磁盘 I/O 延迟带来的图片读取不到的硬伤。
     """
-    img = cv2.imread(img_path)
-    if img is None:
-        raise FileNotFoundError(f"无法读取图片文件: {img_path}")
-
     h, w = img.shape[:2]
     th, tw = target_size
 
@@ -54,13 +49,11 @@ def letterbox_resize(img_path, target_size=(640, 640)):
     # 创建一个 640x640 的纯黑画布
     background = np.zeros((th, tw, 3), dtype=np.uint8)
 
-    # 将缩放后的图像居中粘贴至黑色画布上，防止图像拉伸变形导致特征丢失
+    # 将缩放后的图像居中粘贴至黑色画布上
     dx = (tw - nw) // 2
     dy = (th - nh) // 2
     background[dy:dy+nh, dx:dx+nw] = img_resized
-
-    # 覆盖保存为符合 640x640 标准分辨率的预处理图像
-    cv2.imwrite(img_path, background)
+    return background
 
 
 # =======================================================
@@ -74,16 +67,18 @@ def predict():
         return jsonify({"status": "error", "message": "No image file uploaded"}), 400
         
     file = request.files['image']
+    file_name_raw = file.filename
     
-    # 🌟 修正：将 'uploads' 改为 'upload'，与本地目录及 .gitignore 保持严格一致
-    upload_dir = os.path.join(BASE_DIR, 'upload')
-    os.makedirs(upload_dir, exist_ok=True)
-    img_path = os.path.join(upload_dir, file.filename)
-    file.save(img_path)
-    
-    # =======================================================
-    # 🌟 核心突破注入：当有请求进来时，才在内网初次延迟激活 YOLO 模型
-    # =======================================================
+    # 🌟 核心优化：直接在内存中把文件流解码为 OpenCV 矩阵，绝不发生 I/O 等待卡顿
+    try:
+        file_bytes = np.frombuffer(file.read(), np.uint8)
+        img_mat = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        if img_mat is None:
+            raise ValueError("Uploaded file is not a valid image")
+    except Exception as img_err:
+        return jsonify({"status": "error", "message": f"Image decode failed: {img_err}"}), 400
+
+    # 延迟加载激活 YOLO 模型
     if model is None:
         print("⚙️ [AI Engine] Detected first request. Loading YOLOv8 weights into RAM...")
         try:
@@ -92,20 +87,29 @@ def predict():
         except Exception as load_err:
             print(f"❌ [AI Engine Error] Lazy loading weights failed: {load_err}")
             return jsonify({"status": "error", "message": f"Model initialization error: {load_err}"}), 500
-    # =======================================================
     
-    # =======================================================
-    # 执行 640 x 640 图像预处理与尺寸调整
-    # =======================================================
+    # 执行 640 x 640 内存级图像等比例缩放与黑边填充
     try:
-        letterbox_resize(img_path, target_size=(640, 640))
-        print(f"⚙️ [Preprocessing] Image successfully optimized and resized to 640x640: {file.filename}")
+        img_ready = letterbox_resize_matrix(img_mat, target_size=(640, 640))
+        
+        # 将优化好的图片留存一份到本地 upload 目录中，供前端/历史记录查阅
+        upload_dir = os.path.join(BASE_DIR, 'upload')
+        os.makedirs(upload_dir, exist_ok=True)
+        img_path = os.path.join(upload_dir, file_name_raw)
+        cv2.imwrite(img_path, img_ready)
+        print(f"⚙️ [Preprocessing] Image successfully optimized and written to cache: {file_name_raw}")
     except Exception as prep_err:
-        print(f"⚠️ [Preprocessing Warning] Letterbox resize failed: {prep_err}")
+        print(f"⚠️ [Preprocessing Warning] Letterbox optimization failed, fallback to raw: {prep_err}")
+        # 如果预处理意外失败，回退并直接写盘
+        upload_dir = os.path.join(BASE_DIR, 'upload')
+        os.makedirs(upload_dir, exist_ok=True)
+        img_path = os.path.join(upload_dir, file_name_raw)
+        cv2.imwrite(img_path, img_mat)
+        img_ready = img_mat
     
     try:
-        # 此时传入的图片已完美调整为标准 640x640 分辨率
-        results = model.predict(source=img_path, conf=0.35, workers=0)
+        # 此时传入已完美转换为标准的 640x640 矩阵或原矩阵进行预测
+        results = model.predict(source=img_ready, conf=0.35, workers=0)
         best_detection = None
         highest_conf = 0.0
         
@@ -136,18 +140,16 @@ def predict():
             final_result = best_detection["class_name"]
             final_box = best_detection["box_css"]
             
-            db = None  # 在此处初始化，防止未定义数据库连接时触发 finally 报错
+            db = None  
             try:
                 db = get_db_connection()
                 with db.cursor() as cursor:
-                    # 动作 A：向历史大表实时写入扫描记录
                     sql_insert_record = """
                         INSERT INTO waste_records (username, record_type, material_type, image_path)
                         VALUES (%s, %s, %s, %s)
                     """
-                    cursor.execute(sql_insert_record, ('Guest', 'AI_Scan', final_result, f"upload/{file.filename}"))
+                    cursor.execute(sql_insert_record, ('Guest', 'AI_Scan', final_result, f"upload/{file_name_raw}"))
 
-                    # 动作 B：用于驱动前端仪表盘饼图实时暴涨
                     sql_update_bin = """
                         UPDATE recycle_bins 
                         SET current_volume = LEAST(current_volume + 5, 100),
@@ -185,11 +187,8 @@ def get_dashboard_data():
     try:
         db = get_db_connection()
         with db.cursor() as cursor:
-            # 1. 查询所有垃圾桶当前的剩余容量与实时状态
             cursor.execute("SELECT bin_name, current_volume, max_capacity, status, last_updated FROM recycle_bins;")
             bins = cursor.fetchall()
-            
-            # 2. 查询最近 10 条垃圾扫描历史记录用来填满前端的表格
             cursor.execute("SELECT id, username, record_type, material_type, image_path, created_at FROM waste_records ORDER BY created_at DESC LIMIT 10;")
             records = cursor.fetchall()
             
@@ -259,9 +258,6 @@ def reset_bin():
 # =======================================================
 if __name__ == '__main__':
     print("🚀 WasteScan Core AI Server (Production Mode) is initializing...")
-    
-    # 优先读取 Railway 分配的 PORT 环境变量，若本地测试则回退到 8080
     port = int(os.environ.get("PORT", 8080))
     print(f"📍 Listening internally on port: {port}")
-    
     app.run(host='0.0.0.0', port=port, debug=False)

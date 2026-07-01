@@ -154,11 +154,13 @@ def predict():
             local_now_str = datetime.now(tz_kl).strftime('%Y-%m-%d %H:%M:%S')
 
             # 1. 记入核心流水历史表
-            sql_insert_record = """
-                INSERT INTO waste_records (username, record_type, material_type, image_path, created_at)
-                VALUES (%s, %s, %s, %s, %s)
+           sql_update_user_active = """
+                UPDATE users  
+                SET last_active = DATE_ADD(NOW(), INTERVAL 8 HOUR)  
+                WHERE username = %s
             """
-            cursor.execute(sql_insert_record, (current_user, record_type, final_result, f"upload/{file_name_raw}", local_now_str))
+            # 🌟 注意：最后的参数里同样去掉了 local_now_str，只有 (current_user,)
+            cursor.execute(sql_update_user_active, (current_user,))
 
             # 2. 实时更新公共实体垃圾桶容量
             if is_detected:

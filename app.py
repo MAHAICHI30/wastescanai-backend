@@ -120,7 +120,7 @@ def predict():
         
         for result in results:
             if result.boxes is not None:
-                for box in block := result.boxes:
+                for box in result.boxes:  # 🌟 修复：已彻底移除了引发错误的 block :=
                     conf_score = float(box.conf[0])
                     if conf_score > highest_conf:
                         highest_conf = conf_score

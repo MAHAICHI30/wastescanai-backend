@@ -1,4 +1,5 @@
 import os
+import time
 from flask import Flask, request, jsonify
 from ultralytics import YOLO
 from flask_cors import CORS
@@ -73,7 +74,15 @@ def predict():
         return jsonify({"status": "error", "message": "No image file uploaded"}), 400
         
     file = request.files['image']
-    file_name_raw = file.filename
+    
+    # 🌟【文件名安全清洗与降级机制】：解决 PHP cURL 传输文件名丢失或带特殊字符导致 SQL 崩溃问题
+    raw_filename = file.filename
+    if not raw_filename or raw_filename.strip() == "" or raw_filename == "blob":
+        # 降级方案：如果文件名为空或为前端 blob 默认词，自动生成防重名时间戳
+        file_name_raw = f"scan_{int(time.time())}.jpg"
+    else:
+        # 清洗掉两端空格，并将可能导致 SQL 或文件路径报错的空格替换为下划线
+        file_name_raw = os.path.basename(raw_filename.strip().replace(" ", "_"))
     
     # 🌟【对齐缩进 + 清洗防错】：强行去掉可能被 cURL 夹带的 \r \n 空格等所有隐形字符
     current_user = request.form.get('username', 'Guest').strip()
@@ -168,6 +177,7 @@ def predict():
         db.commit()
         print(f"✅ [MySQL] Transaction synced successfully for user '{current_user}' ({final_result})!")
     except Exception as db_err:
+        # 💡 核心提示：如果修改后依然没有历史记录，请在部署环境控制台查看这条报错的具体信息，如表不存在或字段不匹配！
         print(f"❌ [MySQL Error] Prediction transactional replication failed: {db_err}")
         if db:
             db.rollback()

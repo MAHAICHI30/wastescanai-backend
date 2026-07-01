@@ -28,7 +28,6 @@ except Exception as e:
 
 def get_db_connection():
     """建立自适应 Railway 拓扑结构的内网数据库会话并强制锁定 GMT+8 时区"""
-    # 🌟 修复卡死：如果环境变量拿出来是空字符串，强行将其恢复为内网默认域名
     db_host = os.getenv("MYSQLHOST")
     if not db_host or db_host.strip() == "":
         db_host = "mysql.railway.internal"
@@ -79,23 +78,17 @@ def predict():
         
     file = request.files['image']
     
-    # 🌟【文件名安全清洗与降级机制】：解决 PHP cURL 传输文件名丢失或带特殊字符导致 SQL 崩溃问题
     raw_filename = file.filename
     if not raw_filename or raw_filename.strip() == "" or raw_filename == "blob":
-        # 降级方案：如果文件名为空或为前端 blob 默认词，自动生成防重名时间戳
         file_name_raw = f"scan_{int(time.time())}.jpg"
     else:
-        # 清洗掉两端空格，并将可能导致 SQL 或文件路径报错的空格替换为下划线
         file_name_raw = os.path.basename(raw_filename.strip().replace(" ", "_"))
     
-    # 🌟【对齐缩进 + 清洗防错】：强行去掉可能被 cURL 夹带的 \r \n 空格等所有隐形字符
     current_user = request.form.get('username', 'Guest').strip()
     identity = request.form.get('identity', 'scan').strip() 
     
-    # 智能对齐数据字典映射：camera_scan -> scan, gallery_upload -> upload
     record_type = 'upload' if identity == 'gallery_upload' else 'scan'
     
-    # 将上传的文件流直接解码到内存矩阵，告别磁盘死锁
     try:
         file_bytes = np.frombuffer(file.read(), np.uint8)
         img_mat = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
@@ -104,7 +97,6 @@ def predict():
     except Exception as img_err:
         return jsonify({"status": "error", "message": f"Image decode failed: {img_err}"}), 400
     
-    # 图像预处理与本地缓存持久化
     try:
         img_ready = letterbox_resize_matrix(img_mat, target_size=(640, 640))
         upload_dir = os.path.join(BASE_DIR, 'upload')
@@ -118,7 +110,6 @@ def predict():
         cv2.imwrite(img_path, img_mat)
         img_ready = img_mat
     
-    # 推理主循环与判定状态提取
     final_result = "unknown"
     final_box = [15, 15, 70, 70] 
     is_detected = False
@@ -129,7 +120,7 @@ def predict():
         
         for result in results:
             if result.boxes is not None:
-                for box in result.boxes:
+                for box in block := result.boxes:
                     conf_score = float(box.conf[0])
                     if conf_score > highest_conf:
                         highest_conf = conf_score
@@ -145,20 +136,18 @@ def predict():
     except Exception as ai_err:
         print(f"❌ [AI Inference Error] Inference loop blocked: {ai_err}")
 
-    # 🌟【业务层解耦控制】：独立封装数据库，无论 MySQL 报什么错，都绝对不会影响最下面的 return 回包
+    # 🌟【业务层解耦控制】：利用 CONVERT_TZ 强制抹平时区混乱
     db = None  
     try:
         db = get_db_connection()
         with db.cursor() as cursor:
-            tz_kl = timezone(timedelta(hours=8))  
-            local_now_str = datetime.now(tz_kl).strftime('%Y-%m-%d %H:%M:%S')
-
-            # 1. 记入核心流水历史表
+            
+            # 1. 记入核心流水历史表（直接让 MySQL 把当前的系统 UTC 时间精准掰正成 +08:00 写入）
             sql_insert_record = """
                 INSERT INTO waste_records (username, record_type, material_type, image_path, created_at)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, CONVERT_TZ(NOW(), '@@session.time_zone', '+08:00'))
             """
-            cursor.execute(sql_insert_record, (current_user, record_type, final_result, f"upload/{file_name_raw}", local_now_str))
+            cursor.execute(sql_insert_record, (current_user, record_type, final_result, f"upload/{file_name_raw}"))
 
             # 2. 实时更新公共实体垃圾桶容量
             if is_detected:
@@ -170,18 +159,17 @@ def predict():
                 """
                 cursor.execute(sql_update_bin, (final_result,))
 
-            # 3. 刷新安全用户表活跃时间戳
+            # 3. 刷新安全用户表活跃时间戳（同步使用原生的时区转化保护）
             sql_update_user_active = """
                 UPDATE users  
-                SET last_active = %s  
+                SET last_active = CONVERT_TZ(NOW(), '@@session.time_zone', '+08:00')  
                 WHERE username = %s
             """
-            cursor.execute(sql_update_user_active, (local_now_str, current_user))
+            cursor.execute(sql_update_user_active, (current_user,))
 
         db.commit()
         print(f"✅ [MySQL] Transaction synced successfully for user '{current_user}' ({final_result})!")
     except Exception as db_err:
-        # 💡 核心提示：如果修改后依然没有历史记录，请在部署环境控制台查看这条报错的具体信息，如表不存在或字段不匹配！
         print(f"❌ [MySQL Error] Prediction transactional replication failed: {db_err}")
         if db:
             db.rollback()
@@ -189,7 +177,6 @@ def predict():
         if db:
             db.close()
             
-    # 🌟【放至最外层】：无论上面的 MySQL 出错还是回滚，AI 预测响应结果必定秒回前端，彻底消灭无限转圈圈卡死！
     return jsonify({
         "status": "success",
         "prediction": final_result,

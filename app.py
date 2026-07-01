@@ -1,5 +1,3 @@
-python
-
 import os
 import time
 from flask import Flask, request, jsonify

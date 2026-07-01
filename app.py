@@ -28,8 +28,13 @@ except Exception as e:
 
 def get_db_connection():
     """建立自适应 Railway 拓扑结构的内网数据库会话并强制锁定 GMT+8 时区"""
+    # 🌟 修复卡死：如果环境变量拿出来是空字符串，强行将其恢复为内网默认域名
+    db_host = os.getenv("MYSQLHOST")
+    if not db_host or db_host.strip() == "":
+        db_host = "mysql.railway.internal"
+
     conn = pymysql.connect(
-        host=os.getenv("MYSQLHOST", "mysql.railway.internal"),
+        host=db_host,
         port=int(os.getenv("MYSQLPORT", 3306)),
         user=os.getenv("MYSQLUSER", "root"),
         password=os.getenv("MYSQLPASSWORD", "root"),
@@ -40,7 +45,6 @@ def get_db_connection():
     with conn.cursor() as cursor:
         cursor.execute("SET time_zone = '+08:00';")
     return conn
-
 
 def letterbox_resize_matrix(img, target_size=(640, 640)):
     """内存级自适应等比例缩放与纯黑画布居中填充算法"""

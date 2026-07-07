@@ -154,7 +154,7 @@ def predict():
             local_now_str = datetime.now(tz_kl).strftime('%Y-%m-%d %H:%M:%S')
 
             # 1. 记入核心流水历史表
-           sql_update_user_active = """
+            sql_update_user_active = """
                 UPDATE users  
                 SET last_active = DATE_ADD(NOW(), INTERVAL 8 HOUR)  
                 WHERE username = %s
@@ -164,7 +164,7 @@ def predict():
 
             # 2. 实时更新公共实体垃圾桶容量
             if is_detected:
-                sql_update_bin = """
+               sql_update_bin = """
                     UPDATE recycle_bins  
                     SET current_volume = LEAST(current_volume + 5, 100),
                         status = CASE WHEN current_volume + 5 >= 95 THEN 'Full' ELSE status END

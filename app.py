@@ -143,13 +143,14 @@ def predict():
             tz_kl = timezone(timedelta(hours=8))  
             local_now_str = datetime.now(tz_kl).strftime('%Y-%m-%d %H:%M:%S')
 
-            # 1. 记入核心流水历史表
-            sql_update_user_active = """
-UPDATE users  
-SET last_active = DATE_ADD(NOW(), INTERVAL 8 HOUR)  
-WHERE username = %s
+            # 1. 🌟 新增：向历史流水表 waste_records 写入完整记录
+            sql_insert_history = """
+INSERT INTO waste_records (username, record_type, material_type, image_path, created_at)
+VALUES (%s, %s, %s, %s, %s)
 """
-            cursor.execute(sql_update_user_active, (current_user,))
+            # 使用本地相对存储路径配合数据库结构
+            relative_img_path = f"upload/{file_name_raw}"
+            cursor.execute(sql_insert_history, (current_user, record_type, final_result, relative_img_path, local_now_str))
 
             # 2. 实时更新公共实体垃圾桶容量
             if is_detected:
@@ -170,7 +171,7 @@ WHERE username = %s
             cursor.execute(sql_update_user_active, (local_now_str, current_user))
 
         db.commit()
-        print(f"✅ [MySQL] Transaction synced successfully for user '{current_user}' ({final_result})!")
+        print(f"✅ [MySQL] Transaction & History synced successfully for user '{current_user}' ({final_result})!")
     except Exception as db_err:
         print(f"❌ [MySQL Error] Prediction transactional replication failed: {db_err}")
         if db:

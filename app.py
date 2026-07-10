@@ -1,5 +1,6 @@
 import os
 import time
+import requests
 from flask import Flask, request, jsonify
 from ultralytics import YOLO
 from flask_cors import CORS
@@ -16,6 +17,9 @@ CORS(app)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, 'best.pt')  
+
+# 🔔 Telegram通知设定：容量达到此百分比时，自动推播提醒admin
+ALERT_THRESHOLD = 80
 
 print("⚙️ [Boot Initialization] Pre-loading YOLOv8 weights into memory...")
 try:
@@ -57,6 +61,35 @@ def letterbox_resize_matrix(img, target_size=(640, 640)):
     dy = (th - nh) // 2
     background[dy:dy+nh, dx:dx+nw] = img_resized
     return background
+
+
+# =======================================================
+# 1.5 🔔 Telegram 主动推播通知函数
+# =======================================================
+def send_telegram_alert(bin_type, capacity):
+    """当回收桶容量达到警戒线时，透过Telegram Bot主动通知admin"""
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+    if not bot_token or not chat_id:
+        print("⚠️ [Telegram] Bot token or chat id not configured, skipping alert.")
+        return
+
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    message = (
+        f"⚠️ WasteScan AI Alert\n\n"
+        f"{bin_type} Bin is now {capacity}% full.\n"
+        f"Please check the dashboard and notify the cleaner."
+    )
+
+    try:
+        response = requests.post(url, data={"chat_id": chat_id, "text": message}, timeout=5)
+        if response.status_code == 200:
+            print(f"✅ [Telegram] Alert sent for {bin_type} Bin ({capacity}%)")
+        else:
+            print(f"❌ [Telegram] Failed to send alert: {response.text}")
+    except Exception as e:
+        print(f"❌ [Telegram] Error sending alert: {e}")
 
 
 # =======================================================
@@ -137,6 +170,7 @@ def predict():
 
     # 🌟【业务层解耦控制】：靠左顶格编写多行字符串，彻底根除缩进错乱问题
     db = None  
+    updated_volume = None  # 🔔 用来暂存更新后的容量，供Telegram通知判断使用
     try:
         db = get_db_connection()
         with db.cursor() as cursor:
@@ -162,6 +196,15 @@ WHERE LOWER(bin_name) = LOWER(%s)
 """
                 cursor.execute(sql_update_bin, (final_result,))
 
+                # 🔔 更新后立即查询最新容量，供稍后判断是否需要发送Telegram通知
+                cursor.execute(
+                    "SELECT current_volume FROM recycle_bins WHERE LOWER(bin_name) = LOWER(%s)",
+                    (final_result,)
+                )
+                updated_row = cursor.fetchone()
+                if updated_row:
+                    updated_volume = updated_row['current_volume']
+
             # 3. 刷新安全用户表活跃时间戳
             sql_update_user_active = """
 UPDATE users  
@@ -179,7 +222,11 @@ WHERE username = %s
     finally:
         if db:
             db.close()
-            
+
+    # 🔔 数据库交易成功且容量达到警戒线时，主动发送Telegram通知给admin
+    if updated_volume is not None and updated_volume >= ALERT_THRESHOLD:
+        send_telegram_alert(final_result.capitalize(), updated_volume)
+
     # 🌟【放至最外层】：无论上面的 MySQL 出错还是回滚，AI 预测结果正常回传前端
     return jsonify({
         "status": "success",

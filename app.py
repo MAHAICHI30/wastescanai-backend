@@ -186,12 +186,12 @@ VALUES (%s, %s, %s, %s, %s)
             relative_img_path = f"upload/{file_name_raw}"
             cursor.execute(sql_insert_history, (current_user, record_type, final_result, relative_img_path, local_now_str))
 
-            # 2. 实时更新公共实体垃圾桶容量
+            # 2. 实时更新公共实体垃圾桶容量（每次scan成功 +1%，更贴近实际单件垃圾的容量占比）
             if is_detected:
                 sql_update_bin = """
 UPDATE recycle_bins  
-SET current_volume = LEAST(current_volume + 5, 100),
-    status = CASE WHEN current_volume + 5 >= 95 THEN 'Full' ELSE status END
+SET current_volume = LEAST(current_volume + 1, 100),
+    status = CASE WHEN current_volume + 1 >= 95 THEN 'Full' ELSE status END
 WHERE LOWER(bin_name) = LOWER(%s)
 """
                 cursor.execute(sql_update_bin, (final_result,))
